@@ -1,3 +1,6 @@
+import com.opencsv.CSVParser;
+import com.opencsv.CSVParserBuilder;
+import javafx.beans.binding.DoubleExpression;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
@@ -8,9 +11,11 @@ import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.util.GenericOptionsParser;
 
 import java.io.IOException;
 import java.util.*;
+import org.eclipse.jetty.http.QuotedCSVParser;
 
 
 /**
@@ -19,22 +24,12 @@ import java.util.*;
  * program disables the combiner.
  */
 public class PLAIN {
-
     private static final String f1Origin = "ORD";
     private static final String f2Destination = "JFK";
-
-    /**
-     * Map of characters 'm', 'n', 'o', 'p', and 'q'.
-     * Used to partition words into different reducers and
-     * to filter words based on their first letter.
-     */
-    private static final Map<Character, Integer> letters = new HashMap<Character, Integer>() {{
-        put('m', 0);
-        put('n', 1);
-        put('o', 2);
-        put('p', 3);
-        put('q', 4);
-    }};
+    private static final int minYear = 2007;
+    private static final int minMonth = 1;
+    private static final int maxYear = 2008;
+    private static final int maxMonth = 12;
 
     /**
      * The main method that sets up the Hadoop MapReduce job configuration.
@@ -45,16 +40,17 @@ public class PLAIN {
      */
     public static void main(String[] args) throws Exception {
         Configuration conf = new Configuration();
+        String[] otherArgs = new GenericOptionsParser(conf, args).getRemainingArgs();
         Job job = Job.getInstance(conf, "plain");
         job.setJarByClass(PLAIN.class);
-        job.setMapperClass(TokenizerMapper.class);
-        // job.setCombinerClass(IntSumReducer.class); // Combiner is disabled
-        job.setReducerClass(IntSumReducer.class);
+        job.setMapperClass(FlightMapper.class);
+//        job.setCombinerClass(DelayCombiner.class); // Combiner is disabled
+        job.setReducerClass(FlightReducer.class);
         job.setOutputKeyClass(Text.class);
         job.setOutputValueClass(Text.class);
 
 //        job.setPartitionerClass(WordPartitioner.class);
-//        job.setNumReduceTasks(letters.size());
+//        job.setNumReduceTasks(12);
 
         FileInputFormat.addInputPath(job, new Path(args[0]));
         FileOutputFormat.setOutputPath(job, new Path(args[1]));
@@ -62,34 +58,14 @@ public class PLAIN {
     }
 
     /**
-     * A custom Partitioner class that partitions words by their
-     * first character. Words starting with 'm' go to reducer 0,
-     * 'n' to reducer 1, and so on.
-     */
-    public static class WordPartitioner extends Partitioner<Text, IntWritable> {
-        /**
-         * Assigns a partition to each word based on its first character.
-         *
-         * @param key           The word to partition.
-         * @param value         The count associated with the word.
-         * @param numPartitions The total number of partitions (reducers).
-         * @return The partition number for the word.
-         */
-        @Override
-        public int getPartition(Text key, IntWritable value, int numPartitions) {
-            char firstChar = key.toString().toLowerCase().charAt(0);
-            return letters.get(firstChar);
-        }
-    }
-
-    /**
      * The Mapper class for tokenizing lines of input into words,
      * emitting each word with a count of 1 if it starts with one
      * of the target letters ('m', 'n', 'o', 'p', 'q').
      */
-    public static class TokenizerMapper extends Mapper<Object, Text, Text, Text> {
+    public static class FlightMapper extends Mapper<Object, Text, Text, Text> {
         private final Text emitKey = new Text();
         private final Text emitValue = new Text();
+        private final CSVParser csvParser = new CSVParserBuilder().withSeparator(',').build();
 
         /**
          * The map method processes each line of input, tokenizes it,
@@ -102,53 +78,55 @@ public class PLAIN {
          * @throws IOException          If an I/O error occurs.
          * @throws InterruptedException If the map task is interrupted.
          */
-        public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
-            String[] fields = value.toString().split(",");
+        public void map(Object key, Text value, Context context) throws IOException {
+            String[] fields = csvParser.parseLine(value.toString());
 
-            int year = Integer.parseInt(fields[1]);
-            int month = Integer.parseInt(fields[3]);
-            String flightDate = fields[6];
-            String origin = fields[12];
-            String destination = fields[18];
-            int depTime = Integer.parseInt(fields[25]);
-            int arrTime = Integer.parseInt(fields[36]);
-            double arrDelayMinutes = Double.parseDouble(fields[38]);
-            boolean cancelled = fields[42].equals("1");
-            boolean diverted = fields[44].equals("1");
+            try {
+                int year = Integer.parseInt(fields[0]);
+                int month = Integer.parseInt(fields[2]);
+                String flightDate = fields[5];
+                String origin = fields[11];
+                String destination = fields[17];
+                String depTime = fields[24];
+                String arrTime = fields[35];
+                double arrDelayMinutes = Double.parseDouble(fields[37]);
+                boolean cancelled = fields[41].equals("1");
+                boolean diverted = fields[43].equals("1");
 
-            // Filter by date range (June 2007 - May 2008)
-            if (!((year == 2007 && month >= 6) || (year == 2008 && month <= 5))) {
-                return;
-            }
+                // Filter by date range (June 2007 - May 2008)
+                if (!((year == minYear && month >= minMonth) || (year == maxYear && month <= maxMonth))) {
+                    return;
+                }
 
-            // Filter origin and destinations
-            if (!Objects.equals(origin, f1Origin) || !Objects.equals(destination, f2Destination)) {
-                return;
-            }
+                // Filter out cancelled or diverted flights
+                if (cancelled || diverted) {
+                    return;
+                }
 
-            // Filter and check it is not a 1-leg flight
-            if (Objects.equals(origin, f1Origin) && Objects.equals(destination, f2Destination)) {
-                return;
-            }
+                // Filter flights that do not have desired orgin or destination
+                if (!origin.equals(f1Origin) && !destination.equals(f2Destination)) {
+                    return;
+                }
 
-            // Filter out cancelled and diverted flights
-            if (cancelled || diverted) {
-                return;
-            }
+                // Filter 1-legged flights
+                if (origin.equals(f1Origin) && destination.equals(f2Destination)) {
+                    return;
+                }
 
-            if (origin.equals(f1Origin)) {
-                emitKey.set(flightDate + "|" + destination);
-                emitValue.set("F1|" + origin + "|" + destination + "|" + arrTime + "|" + arrDelayMinutes);
+                if (origin.equals(f1Origin)) {
+                    emitKey.set(flightDate + "|" + destination);
+                    emitValue.set("F1|" + arrTime + "|" + arrDelayMinutes);
 
-                // Emit ORD -> X flights as "F1" leg
-                context.write(emitKey, emitValue);
-            } else {
-                emitKey.set(flightDate + "|" + origin);
-                emitValue.set("F2|" + origin + "|" + destination + "|" + depTime + "|" + arrDelayMinutes);
+                    // Emit ORD -> X flights as "F1" leg
+                    context.write(emitKey, emitValue);
+                } else if (destination.equals(f2Destination)) {
+                    emitKey.set(flightDate + "|" + origin);
+                    emitValue.set("F2|" + depTime + "|" + arrDelayMinutes);
 
-                // Emit X -> JFK flights as "F2" leg
-                context.write(emitKey, emitValue);
-            }
+                    // Emit X -> JFK flights as "F2" leg
+                    context.write(emitKey, emitValue);
+                }
+            } catch (Exception e) {}
         }
     }
 
@@ -157,8 +135,10 @@ public class PLAIN {
      * It receives the word and its count from each mapper and aggregates
      * the count across all mappers.
      */
-    public static class IntSumReducer extends Reducer<Text, Text, Text, Text> {
+    public static class FlightReducer extends Reducer<Text, Text, Text, Text> {
         private final IntWritable result = new IntWritable();
+        private final Text name = new Text();
+        private final Text delay = new Text();
 
         /**
          * The reduce method aggregates the word counts by summing
@@ -171,43 +151,77 @@ public class PLAIN {
          * @throws InterruptedException If the reduce task is interrupted.
          */
         public void reduce(Text key, Iterable<Text> values, Context context) throws IOException, InterruptedException {
-            List<String> firstLegFlights = new ArrayList<>();
-            List<String> secondLegFlights = new ArrayList<>();
-            double totalDelay = 0;
-            int flightCount = 0;
+            Map<String, List<Double>> f1Flights = new HashMap<>();
+            Map<String, List<Double>> f2Flights = new HashMap<>();
 
+            // Parse and separate flights into f1 and f2 based on prefix
             for (Text value : values) {
                 String[] parts = value.toString().split("\\|");
                 String legType = parts[0];
+                String time = parts[1];
+                double delay = Double.parseDouble(parts[2]);
 
                 if (legType.equals("F1")) {
-                    firstLegFlights.add(value.toString());
+                    // Check if the key exists, if not, initialize it
+                    List<Double> flightData = f1Flights.get(time);
+                    if (flightData == null) {
+                        flightData = new ArrayList<>();
+                        flightData.add(delay);  // Accumulate delay
+                        flightData.add(1.0);     // Flight count
+                    } else {
+                        flightData.set(0, flightData.get(0) + delay);  // Update delay
+                        flightData.set(1, flightData.get(1) + 1);      // Increment flight count
+                    }
+                    f1Flights.put(time, flightData);
                 } else if (legType.equals("F2")) {
-                    secondLegFlights.add(value.toString());
+                    // Check if the key exists, if not, initialize it
+                    List<Double> flightData = f2Flights.get(time);
+                    if (flightData == null) {
+                        flightData = new ArrayList<>();
+                        flightData.add(delay);  // Accumulate delay
+                        flightData.add(1.0);     // Flight count
+                    } else {
+                        flightData.set(0, flightData.get(0) + delay);  // Update delay
+                        flightData.set(1, flightData.get(1) + 1);      // Increment flight count
+                    }
+                    f2Flights.put(time, flightData);
                 }
             }
 
-            for (String f1 : firstLegFlights) {
-                String[] f1Parts = f1.split("\\|");
-                int f1ArrTime = Integer.parseInt(f1Parts[3]);
-                double f1Delay = Double.parseDouble(f1Parts[4]);
+            // Calculate delays for valid connections
+            double totalDelay = 0;
+            int flightCount = 0;
 
-                for (String f2 : secondLegFlights) {
-                    String[] f2Parts = f2.split("\\|");
-                    int f2DepTime = Integer.parseInt(f2Parts[3]);
-                    double f2Delay = Double.parseDouble(f2Parts[4]);
+            for (String f1Time : f1Flights.keySet()) {
+                int f1ArrivalMinutes = convertToMinutes(f1Time);
+                List<Double> f1 = f1Flights.get(f1Time);
+                double f1Delay = f1.get(0);
 
-                    if (f2DepTime > f1ArrTime) {
+                for (String f2Time : f2Flights.keySet()) {
+                    int f2DepartureMinutes = convertToMinutes(f2Time);
+                    List<Double> f2 = f2Flights.get(f2Time);
+                    double f2Delay = f2.get(0);
+                    if (f2DepartureMinutes > f1ArrivalMinutes) {
                         totalDelay += f1Delay + f2Delay;
-                        flightCount++;
+                        flightCount += Math.max(f1.get(1), f2.get(1));
                     }
                 }
             }
 
+            double averageDelay = 0.0;
             if (flightCount > 0) {
-                double averageDelay = totalDelay / flightCount;
-                context.write(new Text("Average Delay"), new Text(Double.toString(averageDelay)));
+                averageDelay = totalDelay / flightCount;
             }
+
+            name.set("Average Delay " + key);
+            delay.set(averageDelay + "|" + flightCount);
+            context.write(name, delay);
         }
+    }
+
+    private static int convertToMinutes(String time) {
+        int hour = Integer.parseInt(time.substring(0, 2));
+        int minute = Integer.parseInt(time.substring(2));
+        return hour * 60 + minute;
     }
 }

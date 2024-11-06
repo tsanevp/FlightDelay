@@ -13,6 +13,7 @@
         <maven.compiler.target>8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <hadoop.version>3.3.6</hadoop.version>
+        <csvparser.version>5.5.2</csvparser.version>
     </properties>
 
     <dependencies>
@@ -25,6 +26,11 @@
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-common</artifactId>
             <version>${hadoop.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.opencsv</groupId>
+            <artifactId>opencsv</artifactId>
+            <version>${csvparser.version}</version>
         </dependency>
     </dependencies>
 </project>
