@@ -16,8 +16,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static util.Constants.*;
-
 /**
  * A Hadoop MapReduce program that finds the average delay in
  * two-leg flights from ORD -> JFK airports. Amongst other filters,
@@ -25,6 +23,26 @@ import static util.Constants.*;
  * & May 2008.
  */
 public class PLAIN {
+    // Origin and destination airports
+    private static final String f1Origin = "ORD";
+    private static final String f2Destination = "JFK";
+
+    // Indexes of desired data
+    private static final int yearIndex = 0;
+    private static final int monthIndex = 2;
+    private static final int flightDateIndex = 5;
+    private static final int originIndex = 11;
+    private static final int destinationIndex = 17;
+    private static final int departureTimeIndex = 24;
+    private static final int arrivalTimeIndex = 35;
+    private static final int arrDelayMinutesIndex = 37;
+    private static final int cancelledIndex = 41;
+    private static final int divertedIndex = 43;
+    private static final int minYear = 2007;
+    private static final int minMonth = 12;
+    private static final int maxYear = 2008;
+    private static final int maxMonth = 1;
+
     /**
      * The main method that sets up the Hadoop MapReduce job configuration.
      * It specifies the Mapper, Reducer, Partitioner, and other job parameters.
@@ -33,13 +51,16 @@ public class PLAIN {
      * @throws Exception If an error occurs during job configuration or execution.
      */
     public static void main(String[] args) throws Exception {
-//        job.setPartitionerClass(WordPartitioner.class);
+        // Declare CSVParser.jar path
+        Path csvParserPath = new Path("s3://a3b/opencsv.jar");
 
         // Jop 1 Configurations
         Configuration conf = new Configuration();
-        Job job = Job.getInstance(conf, "Flight delay filter and pair");
         String[] otherArgs = new GenericOptionsParser(conf, args).getRemainingArgs();
 
+        Job job = Job.getInstance(conf, "Flight delay filter and pair");
+
+        job.addFileToClassPath(csvParserPath);
         job.setJarByClass(PLAIN.class);
         job.setMapperClass(FlightMapper.class);
         job.setReducerClass(FlightReducer.class);
@@ -49,28 +70,34 @@ public class PLAIN {
 
         // Job 1 Paths
         FileInputFormat.addInputPath(job, new Path(otherArgs[0]));
-        Path betweenOutput = new Path(otherArgs[1] + "test/");
+        Path betweenOutput = new Path(otherArgs[1] + "/middle");
         FileOutputFormat.setOutputPath(job, betweenOutput);
 
         // Wait for job completion
-        job.waitForCompletion(true);
+        boolean completed = job.waitForCompletion(true);
 
-        //Job 2 Configuration
-        Configuration conf2 = new Configuration();
-        Job job2 = Job.getInstance(conf2, "Flight delay tally results");
+        if (completed) {
+            //Job 2 Configuration
+            Configuration conf2 = new Configuration();
+            Job job2 = Job.getInstance(conf2, "Flight delay tally results");
+            job2.addFileToClassPath(csvParserPath);
 
-        job2.setJarByClass(PLAIN.class);
-        job2.setMapperClass(SecondMapper.class);
-        job2.setReducerClass(SecondReducer.class);
-        job2.setOutputKeyClass(Text.class);
-        job2.setOutputValueClass(Text.class);
+            job2.setJarByClass(PLAIN.class);
+            job2.setMapperClass(SecondMapper.class);
+            job2.setReducerClass(SecondReducer.class);
+            job2.setOutputKeyClass(Text.class);
+            job2.setOutputValueClass(Text.class);
+            job.setNumReduceTasks(1);
 
-        // Job 2 Paths
-        FileInputFormat.addInputPath(job2, betweenOutput);
-        FileOutputFormat.setOutputPath(job2, new Path(otherArgs[1] + "output/"));
+            // Job 2 Paths
+            FileInputFormat.addInputPath(job2, betweenOutput);
+            FileOutputFormat.setOutputPath(job2, new Path(otherArgs[1] + "/final"));
 
-        // Wait for job completion & exit
-        System.exit(job2.waitForCompletion(true) ? 0 : 1);
+            // Wait for job completion & exit
+            System.exit(job2.waitForCompletion(true) ? 0 : 1);
+        } else {
+            System.exit(1);
+        }
     }
 
     /**
@@ -157,58 +184,6 @@ public class PLAIN {
                 }
             } catch (Exception ignored) {
             }
-        }
-    }
-
-    /**
-     * Secondary Mapper class that aggregates total flight counts and delays.
-     * Emits aggregated results for further reduction.
-     */
-    public static class SecondMapper extends Mapper<Object, Text, Text, Text> {
-        private final Text emitKey = new Text("F1F2");
-        private double totalDelay;
-        private int totalFlights;
-
-        /**
-         * Setup method that initializes the local counters.
-         *
-         * @param context The context of the Mapper task.
-         * @throws IOException          If an I/O error occurs.
-         * @throws InterruptedException If the setup is interrupted.
-         */
-        @Override
-        protected void setup(Mapper<Object, Text, Text, Text>.Context context) throws IOException, InterruptedException {
-            super.setup(context);
-            this.totalDelay = 0;
-            this.totalFlights = 0;
-        }
-
-        /**
-         * The map method processes and immediately emits each line of input.
-         *
-         * @param key     The input key (usually the byte offset).
-         * @param value   The input value (flightDelay, flightCount).
-         * @param context The context for writing output key-value pairs.
-         * @throws IOException If an I/O error occurs.
-         */
-        public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
-            String[] flightInfo = value.toString().split(",");
-            this.totalDelay += Double.parseDouble(flightInfo[0]);
-            this.totalFlights += Integer.parseInt(flightInfo[1]);
-        }
-
-        /**
-         * Cleanup method that emits the locally aggregated word counts
-         * from the map task's tally counter.
-         *
-         * @param context The context for writing output key-value pairs.
-         * @throws IOException          If an I/O error occurs.
-         * @throws InterruptedException If the cleanup is interrupted.
-         */
-        @Override
-        protected void cleanup(Mapper<Object, Text, Text, Text>.Context context) throws IOException, InterruptedException {
-            super.cleanup(context);
-            context.write(this.emitKey, new Text(this.totalDelay + "," + this.totalFlights));
         }
     }
 
@@ -300,6 +275,58 @@ public class PLAIN {
             }
 
             return flightData;
+        }
+    }
+
+    /**
+     * Secondary Mapper class that aggregates total flight counts and delays.
+     * Emits aggregated results for further reduction.
+     */
+    public static class SecondMapper extends Mapper<Object, Text, Text, Text> {
+        private final Text emitKey = new Text("F1F2");
+        private double totalDelay;
+        private int totalFlights;
+
+        /**
+         * Setup method that initializes the local counters.
+         *
+         * @param context The context of the Mapper task.
+         * @throws IOException          If an I/O error occurs.
+         * @throws InterruptedException If the setup is interrupted.
+         */
+        @Override
+        protected void setup(Mapper<Object, Text, Text, Text>.Context context) throws IOException, InterruptedException {
+            super.setup(context);
+            this.totalDelay = 0;
+            this.totalFlights = 0;
+        }
+
+        /**
+         * The map method processes and immediately emits each line of input.
+         *
+         * @param key     The input key (usually the byte offset).
+         * @param value   The input value (flightDelay, flightCount).
+         * @param context The context for writing output key-value pairs.
+         * @throws IOException If an I/O error occurs.
+         */
+        public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
+            String[] flightInfo = value.toString().split(",");
+            this.totalDelay += Double.parseDouble(flightInfo[0].trim());
+            this.totalFlights += Integer.parseInt(flightInfo[1].trim());
+        }
+
+        /**
+         * Cleanup method that emits the locally aggregated word counts
+         * from the map task's tally counter.
+         *
+         * @param context The context for writing output key-value pairs.
+         * @throws IOException          If an I/O error occurs.
+         * @throws InterruptedException If the cleanup is interrupted.
+         */
+        @Override
+        protected void cleanup(Mapper<Object, Text, Text, Text>.Context context) throws IOException, InterruptedException {
+            super.cleanup(context);
+            context.write(this.emitKey, new Text(this.totalDelay + "," + this.totalFlights));
         }
     }
 
