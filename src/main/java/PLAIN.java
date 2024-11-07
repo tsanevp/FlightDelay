@@ -39,9 +39,9 @@ public class PLAIN {
     private static final int cancelledIndex = 41;
     private static final int divertedIndex = 43;
     private static final int minYear = 2007;
-    private static final int minMonth = 12;
+    private static final int minMonth = 6;
     private static final int maxYear = 2008;
-    private static final int maxMonth = 1;
+    private static final int maxMonth = 5;
 
     /**
      * The main method that sets up the Hadoop MapReduce job configuration.
@@ -87,7 +87,7 @@ public class PLAIN {
             job2.setReducerClass(SecondReducer.class);
             job2.setOutputKeyClass(Text.class);
             job2.setOutputValueClass(Text.class);
-            job.setNumReduceTasks(1);
+            job2.setNumReduceTasks(1);
 
             // Job 2 Paths
             FileInputFormat.addInputPath(job2, betweenOutput);
